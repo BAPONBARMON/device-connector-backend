@@ -1,72 +1,98 @@
-﻿const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
+﻿const express = require("express");
+const http = require("http");
+const socketIo = require("socket.io");
+const cors = require("cors");
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, { cors: { origin: "*" } });
 
-// Object to store registered devices: key is device code, value is socket.id
+// Global mapping for devices: deviceCode -> socket id
 const devices = {};
 
-app.get('/', (req, res) => {
-  res.send("Socket.IO Server is running.");
-});
+app.use(cors());
 
-io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
+io.on("connection", (socket) => {
+  console.log("User connected: " + socket.id);
 
-  // When a device registers its unique 6-digit code
-  socket.on('register-device', ({ code }) => {
-    devices[code] = socket.id;
-    socket.deviceCode = code; // store the code in the socket for later removal
-    console.log(`Device registered with code: ${code}`);
+  // Register device with its 6-digit code.
+  socket.on("register-device", (data) => {
+    // data = { code: "123456" }
+    socket.deviceCode = data.code;
+    devices[data.code] = socket.id;
+    console.log(`Device registered: ${data.code} with socket id ${socket.id}`);
   });
 
-  // When a device attempts to connect using a target code
-  socket.on('connect-to-code', ({ fromCode, targetCode }) => {
-    console.log(`Connection attempt from device ${fromCode} to target code ${targetCode}`);
-    // Prevent self-connection
-    if (fromCode === targetCode) {
-      socket.emit('connection-failure', { message: 'Cannot connect to self.' });
+  // Handle connection request from one device to another using 6-digit codes.
+  socket.on("connect-to-code", (data) => {
+    console.log(`Connection request from ${data.fromCode} to ${data.targetCode}`);
+
+    // Prevent self-connection.
+    if (data.fromCode === data.targetCode) {
+      socket.emit("connection-failure", { message: "Cannot connect to yourself." });
       return;
     }
-    // Check if the target code is registered
-    if (devices[targetCode]) {
-      const targetSocketId = devices[targetCode];
-      // Emit success event to both the requesting device and the target device
-      socket.emit('connection-success', { fromCode, targetCode });
-      io.to(targetSocketId).emit('connection-success', { fromCode, targetCode });
-      console.log(`Connection established between ${fromCode} and ${targetCode}`);
-    } else {
-      socket.emit('connection-failure', { message: 'Target device not found or offline.' });
-      console.log(`Connection failed: Target code ${targetCode} not registered.`);
+
+    // Check if target device is registered.
+    const targetSocketId = devices[data.targetCode];
+    if (!targetSocketId) {
+      socket.emit("connection-failure", { message: "Target device not available." });
+      return;
+    }
+
+    const targetSocket = io.sockets.sockets.get(targetSocketId);
+    if (!targetSocket) {
+      socket.emit("connection-failure", { message: "Target device not available." });
+      return;
+    }
+
+    // Establish the pair connection.
+    socket.connectedTo = targetSocketId;
+    targetSocket.connectedTo = socket.id;
+
+    // Notify both devices that connection has been established.
+    socket.emit("connection-success", { message: "Connected with device " + data.targetCode });
+    targetSocket.emit("connection-success", { message: "Connected with device " + data.fromCode });
+  });
+
+  // Forward text messages only to the connected partner.
+  socket.on("send-message", (data) => {
+    if (socket.connectedTo) {
+      const targetSocket = io.sockets.sockets.get(socket.connectedTo);
+      if (targetSocket) {
+        targetSocket.emit("receive-message", data);
+      }
     }
   });
 
-  // Handle text messages from clients
-  socket.on('send-message', (data) => {
-    console.log(`Message from ${data.id}: ${data.text}`);
-    io.emit('receive-message', { id: data.id, text: data.text });
+  // Forward file sharing events only to the connected partner.
+  socket.on("send-file", (data) => {
+    if (socket.connectedTo) {
+      const targetSocket = io.sockets.sockets.get(socket.connectedTo);
+      if (targetSocket) {
+        targetSocket.emit("receive-file", data);
+      }
+    }
   });
 
-  // Handle file transfer events
-  socket.on('send-file', (data) => {
-    console.log(`File from ${data.id}: ${data.filename}`);
-    io.emit('receive-file', { id: data.id, filename: data.filename });
-  });
-
-  // On client disconnect, remove the device from the registration map
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+  // Clean up on disconnect.
+  socket.on("disconnect", () => {
+    console.log("User disconnected: " + socket.id);
+    // Remove device from mapping.
     if (socket.deviceCode) {
       delete devices[socket.deviceCode];
-      console.log(`Device with code ${socket.deviceCode} removed from registry.`);
+    }
+    // Inform the connected partner (if any) about the disconnection.
+    if (socket.connectedTo) {
+      const targetSocket = io.sockets.sockets.get(socket.connectedTo);
+      if (targetSocket) {
+        targetSocket.emit("connection-failure", { message: "The other device has disconnected." });
+        targetSocket.connectedTo = null;
+      }
     }
   });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+server.listen(process.env.PORT || 3000, () => {
+  console.log("Server running on port " + (process.env.PORT || 3000));
 });

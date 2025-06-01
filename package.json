@@ -1,12 +1,13 @@
 ﻿{
-  "name": "device-connector",
+  "name": "device-connector-backend",
   "version": "1.0.0",
-  "description": "Real-time device connector using Socket.IO",
+  "description": "A backend for real-time chat and file sharing using Socket.IO",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "express": "^4.18.2",
     "socket.io": "^4.5.4"
   }
