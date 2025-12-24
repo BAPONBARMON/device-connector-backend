@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const http = require("http");
 const socketIo = require("socket.io");
 const cors = require("cors");
@@ -7,92 +7,80 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, { cors: { origin: "*" } });
 
-// Global mapping for devices: deviceCode -> socket id
-const devices = {};
-
 app.use(cors());
 
+// deviceCode -> socketId
+const devices = {};
+
+// socketId -> socketId (pair)
+const connections = {};
+
 io.on("connection", (socket) => {
-  console.log("User connected: " + socket.id);
+  console.log("Connected:", socket.id);
 
-  // Register device with its 6-digit code.
-  socket.on("register-device", (data) => {
-    // data = { code: "123456" }
-    socket.deviceCode = data.code;
-    devices[data.code] = socket.id;
-    console.log(`Device registered: ${data.code} with socket id ${socket.id}`);
+  // register device
+  socket.on("register-device", ({ code }) => {
+    socket.deviceCode = code;
+    devices[code] = socket.id;
   });
 
-  // Handle connection request from one device to another using 6-digit codes.
-  socket.on("connect-to-code", (data) => {
-    console.log(`Connection request from ${data.fromCode} to ${data.targetCode}`);
-
-    // Prevent self-connection.
-    if (data.fromCode === data.targetCode) {
-      socket.emit("connection-failure", { message: "Cannot connect to yourself." });
+  // connect two devices
+  socket.on("connect-to-code", ({ fromCode, targetCode }) => {
+    if (fromCode === targetCode) {
+      socket.emit("connection-failure", { message: "Cannot connect to yourself" });
       return;
     }
 
-    // Check if target device is registered.
-    const targetSocketId = devices[data.targetCode];
+    const targetSocketId = devices[targetCode];
     if (!targetSocketId) {
-      socket.emit("connection-failure", { message: "Target device not available." });
+      socket.emit("connection-failure", { message: "Target not online" });
       return;
     }
 
-    const targetSocket = io.sockets.sockets.get(targetSocketId);
-    if (!targetSocket) {
-      socket.emit("connection-failure", { message: "Target device not available." });
+    if (connections[socket.id] || connections[targetSocketId]) {
+      socket.emit("connection-failure", { message: "Device already connected" });
       return;
     }
 
-    // Establish the pair connection.
-    socket.connectedTo = targetSocketId;
-    targetSocket.connectedTo = socket.id;
+    connections[socket.id] = targetSocketId;
+    connections[targetSocketId] = socket.id;
 
-    // Notify both devices that connection has been established.
-    socket.emit("connection-success", { message: "Connected with device " + data.targetCode });
-    targetSocket.emit("connection-success", { message: "Connected with device " + data.fromCode });
+    socket.emit("connection-success");
+    io.to(targetSocketId).emit("connection-success");
   });
 
-  // Forward text messages only to the connected partner.
+  // send message
   socket.on("send-message", (data) => {
-    if (socket.connectedTo) {
-      const targetSocket = io.sockets.sockets.get(socket.connectedTo);
-      if (targetSocket) {
-        targetSocket.emit("receive-message", data);
-      }
+    const target = connections[socket.id];
+    if (target) {
+      io.to(target).emit("receive-message", data);
+      socket.emit("delivered", { id: data.mid });
     }
   });
 
-  // Forward file sharing events only to the connected partner.
-  socket.on("send-file", (data) => {
-    if (socket.connectedTo) {
-      const targetSocket = io.sockets.sockets.get(socket.connectedTo);
-      if (targetSocket) {
-        targetSocket.emit("receive-file", data);
-      }
+  // typing
+  socket.on("typing", (state) => {
+    const target = connections[socket.id];
+    if (target) {
+      io.to(target).emit("typing", state);
     }
   });
 
-  // Clean up on disconnect.
+  // disconnect
   socket.on("disconnect", () => {
-    console.log("User disconnected: " + socket.id);
-    // Remove device from mapping.
-    if (socket.deviceCode) {
-      delete devices[socket.deviceCode];
+    console.log("Disconnected:", socket.id);
+
+    const target = connections[socket.id];
+    if (target) {
+      io.to(target).emit("connection-failure", { message: "User disconnected" });
+      delete connections[target];
     }
-    // Inform the connected partner (if any) about the disconnection.
-    if (socket.connectedTo) {
-      const targetSocket = io.sockets.sockets.get(socket.connectedTo);
-      if (targetSocket) {
-        targetSocket.emit("connection-failure", { message: "The other device has disconnected." });
-        targetSocket.connectedTo = null;
-      }
-    }
+
+    delete connections[socket.id];
+    if (socket.deviceCode) delete devices[socket.deviceCode];
   });
 });
 
-server.listen(process.env.PORT || 3000, () => {
-  console.log("Server running on port " + (process.env.PORT || 3000));
-});
+server.listen(process.env.PORT || 3000, () =>
+  console.log("Server running")
+);
