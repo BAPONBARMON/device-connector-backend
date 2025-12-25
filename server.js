@@ -44,22 +44,49 @@ io.on("connection", (socket) => {
     io.to(targetSocketId).emit("connection-success");
   });
 
-  // message forward
+  // message forward (ORIGINAL)
   socket.on("send-message", (data) => {
     if (socket.connectedTo) {
       io.to(socket.connectedTo).emit("receive-message", data);
     }
   });
 
-  // file forward
-  socket.on("send-file", (data) => {
+  // 🔹 SEEN TICK (ADD)
+  socket.on("message-seen", (msgId) => {
     if (socket.connectedTo) {
-      io.to(socket.connectedTo).emit("receive-file", data);
+      io.to(socket.connectedTo).emit("message-seen", msgId);
     }
+  });
+
+  // 🔹 TYPING INDICATOR (ADD)
+  socket.on("typing-start", () => {
+    if (socket.connectedTo) {
+      io.to(socket.connectedTo).emit("typing-start");
+    }
+  });
+
+  socket.on("typing-stop", () => {
+    if (socket.connectedTo) {
+      io.to(socket.connectedTo).emit("typing-stop");
+    }
+  });
+
+  // 🔹 MANUAL DISCONNECT FIX (ADD)
+  socket.on("manual-disconnect", () => {
+    if (socket.connectedTo) {
+      io.to(socket.connectedTo).emit("connection-failure", {
+        message: "Other device disconnected"
+      });
+
+      const other = io.sockets.sockets.get(socket.connectedTo);
+      if (other) other.connectedTo = null;
+    }
+    socket.connectedTo = null;
   });
 
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id);
+
     if (socket.deviceCode) delete devices[socket.deviceCode];
 
     if (socket.connectedTo) {
